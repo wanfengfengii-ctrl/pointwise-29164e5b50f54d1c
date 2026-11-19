@@ -17,9 +17,9 @@ def choose_words(archive: Archive, pinned: ReadRevision):
     words = [None, None, None]
     for index, slot in enumerate(slot_addresses(pinned.member.address)):
         try:
-            block = read_slot(archive, slot)
+            block = read_slot(archive, slot, pinned.revision)
         except SlotUnavailable:
             continue
-        if block.address == slot:
+        if block.address == slot and block.revision == pinned.revision:
             words[index] = block.value
     return RevisionWords(*words)

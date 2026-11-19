@@ -18,13 +18,13 @@ class SlotBlock:
     value: int
 
 
-def read_slot(archive: Archive, address: SlotAddress):
+def read_slot(archive: Archive, address: SlotAddress, revision=None):
     try:
-        record = archive.volume(address.role).read_record(address.stripe)
+        record = archive.volume(address.role).read_record(address.stripe, revision)
         if record is None:
             raise SlotUnavailable(f'block missing at {address}')
-        revision, data = record
-        return SlotBlock(address, revision, decode_word(data, archive.bits))
+        block_revision, data = record
+        return SlotBlock(address, block_revision, decode_word(data, archive.bits))
     except (sqlite3.Error, InvalidWord) as exc:
         raise SlotUnavailable(f'cannot read {address}') from exc
 

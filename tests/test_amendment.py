@@ -9,6 +9,8 @@ from lake.amend.requests import CorrectionRequest, InvalidCorrection
 from lake.archive import Archive
 from lake.audit.reconcile import reconcile_correction
 from lake.audit.selection import audit_batch
+from lake.batch.intake import make_batch_input
+from lake.batch.seal import seal_batch
 from lake.read.collect import read_stripe
 from lake.volume.layout import SlotRole, slot_addresses
 from lake.volume.slots import read_slot
@@ -166,3 +168,53 @@ class AmendmentTests(unittest.TestCase):
             with self.assertRaises(InvalidCorrection):
                 apply_correction(archive, CorrectionRequest('C02', address, SlotRole.FIRST, 2**65))
             self.assertEqual(audit_batch(archive, 'L01').total, 2**64 + 10)
+
+    def test_incident_full_batch_totals_before_during_after(self):
+        with fresh() as archive:
+            sealed = seal_batch(archive, make_batch_input('L01', [('R20', 0, 7), ('R03', 5, 9)]))
+            address = sealed.members[1].address
+            before = audit_batch(archive, 'L01')
+            self.assertEqual(before.total, 21)
+            paused = []
+
+            def pause(event):
+                if event.phase == 'after_slot' and event.role is SlotRole.FIRST:
+                    with offlined(archive, SlotRole.SECOND):
+                        paused.append(audit_batch(archive, 'L01'))
+                        last = paused[-1].rows[-1]
+                        self.assertEqual((last.revision, last.values), (1, (5, 9)))
+                    self.assertEqual(paused[-1].total, 21)
+
+            receipt = apply_correction(
+                Archive.open(archive.root, on_event=pause),
+                CorrectionRequest('C01', address, SlotRole.FIRST, 6))
+            self.assertEqual(len(paused), 1)
+            after = audit_batch(archive, 'L01')
+            self.assertEqual((after.total, after.rows[-1].revision), (22, 2))
+            self.assertEqual(after.rows[-1].values, (6, 9))
+            self.assertEqual(reconcile_correction(before, after, receipt), 1)
+
+    def test_missing_volume_keeps_same_revision_after_publish(self):
+        with fresh() as archive:
+            address = seal_pair(archive)
+            apply_correction(archive, CorrectionRequest('C01', address, SlotRole.FIRST, 6))
+            for role in (SlotRole.FIRST, SlotRole.SECOND, SlotRole.PARITY):
+                with self.subTest(role=role), offlined(archive, role):
+                    result = read_stripe(archive, address)
+                    self.assertEqual((result.revision, result.values), (2, (6, 9)))
+                    self.assertEqual(audit_batch(archive, 'L01').total, 15)
+
+    def test_each_slot_commits_independently_and_old_revision_survives(self):
+        with fresh() as archive:
+            address = seal_pair(archive)
+            apply_correction(archive, CorrectionRequest('C01', address, SlotRole.FIRST, 6))
+            revisions = []
+            for slot in slot_addresses(address):
+                current = read_slot(archive, slot)
+                revisions.append((current.revision, current.value))
+            self.assertEqual(revisions, [(2, 6), (2, 9), (2, 15)])
+            # The superseded revision remains durable evidence for pinned reads.
+            pinned = [read_slot(archive, slot, 1) for slot in slot_addresses(address)]
+            self.assertEqual([(block.revision, block.value) for block in pinned],
+                             [(1, 5), (1, 9), (1, 12)])
+            self.assertEqual(read_stripe(archive, address).revision, 2)
