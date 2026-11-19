@@ -1,0 +1,6 @@
+{
+  "bits": 8,
+  "batch_id": "L01",
+  "rows": [["R20", 0, 7], ["R03", 5, 9]],
+  "correction": {"request_id": "C01", "row_id": "R03", "role": "first", "new_value": 6}
+}
